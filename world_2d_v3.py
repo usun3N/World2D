@@ -313,7 +313,10 @@ class MultiPlayer(World):
         if isSelf:
             if self.isHost:
                 for client in self.clients:
-                    client.conn.send(f"set_block,{x},{y},{id},{mode};".encode("utf-8"))
+                    try:
+                        client.conn.send(f"set_block,{x},{y},{id},{mode};".encode("utf-8"))
+                    except:
+                        self.clients.remove(client)
             else:
                 self.server.send(f"set_block,{x},{y},{id},{mode};".encode("utf-8"))
     
@@ -332,7 +335,10 @@ class MultiPlayer(World):
         if isSelf:
             if self.isHost:
                 for client in self.clients:
-                    client.conn.send(f"swap_block,{x1},{y1},{x2},{y2};".encode("utf-8"))
+                    try:
+                        client.conn.send(f"swap_block,{x1},{y1},{x2},{y2};".encode("utf-8"))
+                    except:
+                        self.clients.remove(client)
             else:
                 self.server.send(f"swap_block,{x1},{y1},{x2},{y2};".encode("utf-8"))
     
@@ -348,6 +354,25 @@ class MultiPlayer(World):
         while True:
             conn, addr = sock.accept()
             self.clients.append(Connection(conn, addr, self, True))
+            send_data = [0 for _ in range(self.width * self.height)]
+            i = 0
+            for x in range(self.width):
+                for y in range(self.height):
+                    send_data[i] = self.get_block_id(x, y)
+                    i += 1
+            conn.send(f"sync_world,{','.join(map(str, send_data))};".encode("utf-8"))
+            
+    def sync_world(self, data):
+        """
+        サーバーから送られてきたワールドデータを受け取り、
+        ワールドデータを更新します。
+        """
+        i = 0
+        for x in range(self.width):
+            for y in range(self.height):
+                self.set_block(x, y, data[i], 1, False)
+                i += 1
+
 
     def multiplayer_client(self):
         """
@@ -388,11 +413,19 @@ class Connection:
         """
         buffer = ""
         raw_command = ""
-        while True:
-            data = self.conn.recv(1024)
+        loop = True
+        while loop:
+            try:
+                data = self.conn.recv(1024)
+            except:
+                loop = False
+                self.conn.close()
+                self.world.clients.remove(self)
             decoded = data.decode("utf-8")
             if not data:
+                loop = False
                 self.conn.close()
+                self.world.clients.remove(self)
                 break
 
             if self.isHostSide:
@@ -428,6 +461,8 @@ class Connection:
             self.world.set_block(args[0], args[1], args[2], args[3], False)
         elif command =="swap_block":
             self.world.swap_block(args[0], args[1], args[2], args[3], False)
+        elif command =="sync_world":
+            self.world.sync_world(args)
                 
 
 class Block:
@@ -686,7 +721,7 @@ def pygame_input(out:str, error:str = ""):
 
 
 def main():
-    global world_data, multiplayer, isHost, session
+    global world_data, multiplayer, isHost
     screen = pygame.display.get_surface()
     runnning = True
     clock = pygame.time.Clock()
@@ -703,6 +738,12 @@ def main():
         world_data.update(screen)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                if multiplayer:
+                    if isHost:
+                        for client in world_data.clients:
+                            client.conn.close()
+                    else:
+                        world_data.server.close()
                 runnning = False
             else:
                 if event.type == pygame.MOUSEBUTTONDOWN:
